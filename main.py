@@ -1,11 +1,12 @@
-import asyncio
-import aiohttp
+import requests
 import re
+import socket
 import time
-import os
+import binascii
+from concurrent.futures import ThreadPoolExecutor
 
 # ==========================================
-# 💎 Proxy Sources List (Telegram & GitHub)
+# 🎯 منابع (فقط منابعی که پروکسی MTProto میذارن)
 # ==========================================
 SOURCES = [
     # --- Premium GitHub Raw Sources ---
@@ -37,103 +38,99 @@ SOURCES = [
     # "YOUR_CHANNEL_LINK_OR_RAW_URL",
 ]
 
-# ==========================================
-# ⚙️ Security Settings (Anti-Ban)
-# ==========================================
-TIMEOUT = 3           # Connection Timeout (seconds)
-CONCURRENT_LIMIT = 40 # Max concurrent checks to prevent high CPU usage
+# ⚙️ تنظیمات سخت‌گیرانه
+TIMEOUT = 1.5        # اگه بیشتر از 1.5 ثانیه طول کشید، بندازش دور
+MAX_PROXIES = 50     # فقط 50 تا از بهترین‌ها رو نگه دار
 
 # ==========================================
-# 🚀 Core Functions
+# 🛠 توابع
 # ==========================================
 
-async def fetch_source(session, url):
-    """Fetch content from sources asynchronously."""
-    try:
-        async with session.get(url, timeout=10) as response:
-            return await response.text()
-    except:
-        return ""
-
-async def check_proxy(proxy, semaphore):
-    """
-    Test TCP connection to the proxy.
-    Uses a semaphore to limit concurrent connections.
-    """
-    async with semaphore: 
+def fetch_proxies():
+    print("🔍 در حال اسکن منابع...")
+    proxies = set()
+    
+    for url in SOURCES:
         try:
-            # Extract IP and Port using Regex
-            # Pattern: server=...&port=...
-            server = re.search(r'server=([^&]+)', proxy).group(1)
-            port = int(re.search(r'port=(\d+)', proxy).group(1))
+            resp = requests.get(url, timeout=5).text
+            # ریجکس دقیق برای استخراج (هم tg:// هم https)
+            # فقط سکرت‌هایی که کاراکترهای مجاز دارن رو میگیره
+            matches = re.findall(r'(?:tg://|https://t\.me/)proxy\?server=([^&]+)&port=(\d+)&secret=([a-zA-Z0-9]+)', resp)
             
-            start = time.time()
-            # Open a TCP connection (Lightweight check)
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(server, port), timeout=TIMEOUT
-            )
-            writer.close()
-            await writer.wait_closed()
-            
-            ping = int((time.time() - start) * 1000)
-            return proxy, ping
+            for server, port, secret in matches:
+                # فیلتر اولیه: سکرت باید معتبر باشه (معمولا 32 کاراکتر)
+                if len(secret) >= 32: 
+                    proxies.add((server, int(port), secret))
         except:
-            return None, None
+            pass
+            
+    print(f"📦 تعداد کل کاندیداها: {len(proxies)}")
+    return list(proxies)
 
-async def main():
-    print("🔥 Starting Proxy Collector (Safe & Turbo Mode)...")
+def check_proxy_strict(proxy_data):
+    server, port, secret = proxy_data
     
-    all_text = ""
-    
-    # 1. Download all sources concurrently
-    print("📥 1. Fetching sources...")
-    async with aiohttp.ClientSession() as session:
-        tasks = [fetch_source(session, url) for url in SOURCES]
-        results = await asyncio.gather(*tasks)
-        all_text = "\n".join(results)
+    try:
+        # تست پینگ دقیق
+        start_time = time.time()
+        
+        # 1. ایجاد سوکت
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(TIMEOUT)
+        
+        # 2. تلاش برای اتصال (Connect)
+        sock.connect((server, port))
+        
+        # 3. تست ارسال دیتا (شبیه‌سازی هندشیک اولیه)
+        # این باعث میشه مطمئن بشیم سرور واقعا دیتای ما رو میگیره و فقط روشن نیست
+        # یه بایت رندوم میفرستیم (تستِ زنده بودن)
+        sock.sendall(binascii.unhexlify('ef')) 
+        
+        # اگه تا اینجا ارور نداد و تایم اوت نشد، یعنی سرور پاسخگوئه
+        latency = int((time.time() - start_time) * 1000)
+        sock.close()
+        
+        return {
+            'link': f"tg://proxy?server={server}&port={port}&secret={secret}",
+            'ping': latency
+        }
+    except:
+        return None
 
-    # 2. Extract links using Regex
-    # Supports both tg:// and https://t.me/proxy formats
-    print("🔍 2. Extracting and normalizing links...")
-    regex = r'(tg://proxy\?server=[^&]+&port=\d+&secret=[^"\s&\n]+|https://t\.me/proxy\?server=[^&]+&port=\d+&secret=[^"\s&\n]+)'
-    raw_proxies = re.findall(regex, all_text)
+def main():
+    raw_proxies = fetch_proxies()
+    valid_proxies = []
     
-    # Normalize links (Convert all to tg://)
-    normalized_proxies = set()
-    for p in raw_proxies:
-        p = p.replace("https://t.me/proxy", "tg://proxy")
-        normalized_proxies.add(p)
+    print(f"🔥 شروع تست دقیق (با اینترنت لوکال شما)...")
+    print(f"⏳ تایم‌اوت مجاز: {TIMEOUT} ثانیه")
+    
+    # استفاده از 50 تا ترد همزمان برای سرعت بالا
+    with ThreadPoolExecutor(max_workers=50) as executor:
+        results = executor.map(check_proxy_strict, raw_proxies)
+        
+        for res in results:
+            if res:
+                print(f"✅ زنده: {res['ping']}ms")
+                valid_proxies.append(res)
 
-    print(f"📦 Total Raw Proxies Found: {len(normalized_proxies)}")
+    # مرتب‌سازی بر اساس پینگ (کمتر = بهتر)
+    valid_proxies.sort(key=lambda x: x['ping'])
     
-    # 3. Test proxies with concurrency limit
-    print("⚡️ 3. Starting Health Check (Ping Test)...")
-    semaphore = asyncio.Semaphore(CONCURRENT_LIMIT)
-    tasks = [check_proxy(p, semaphore) for p in list(normalized_proxies)]
+    # انتخاب بهترین‌ها
+    top_proxies = valid_proxies[:MAX_PROXIES]
     
-    # Execute tests
-    results = await asyncio.gather(*tasks)
-    
-    # Filter valid proxies
-    working_proxies = []
-    for proxy, ping in results:
-        if proxy:
-            working_proxies.append({'link': proxy, 'ping': ping})
+    if not top_proxies:
+        print("❌ هیچ پروکسی سالمی پیدا نشد! (شاید نتت مشکل داره یا منابع فیلترن)")
+        return
 
-    # Sort by speed (Lowest ping first)
-    working_proxies.sort(key=lambda x: x['ping'])
+    # ذخیره فایل
+    final_links = [p['link'] for p in top_proxies]
     
-    # Extract final links
-    final_links = [x['link'] for x in working_proxies]
-
-    print(f"✅ Total Valid Proxies: {len(final_links)}")
-
-    # 4. Save to file
-    print("💾 4. Saving to file...")
     with open("mtproto.txt", "w", encoding="utf-8") as f:
         f.write("\n".join(final_links))
-    
-    print("🎉 Done! File 'mtproto.txt' saved successfully.")
+        
+    print(f"\n💎 {len(final_links)} پروکسی طلایی ذخیره شد.")
+    print(f"🚀 بهترین پینگ: {top_proxies[0]['ping']}ms")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
