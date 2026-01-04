@@ -1,35 +1,26 @@
-import asyncio
-import aiohttp
+import requests
 import re
+import socket
 import time
-import os
-import random
+from concurrent.futures import ThreadPoolExecutor
 
 # ==========================================
-# 📋 منابع (Sources)
+# 🎯 SOURCES (Full Scan Mode)
 # ==========================================
 SOURCES = [
     # --- Premium GitHub Raw Sources ---
     "https://raw.githubusercontent.com/hookzof/socks5_list/master/tg/mtproto.txt",
-    "https://raw.githubusercontent.com/soroushmirzaei/telegram-proxies-collector/main/proxies.txt",
-    "https://raw.githubusercontent.com/MahsaNetConfigTopic/proxy/main/proxies.txt",
     
     # --- Telegram Channels (Web Preview Mode /s/) ---
     "https://t.me/s/ProxyMTProto",
     "https://t.me/s/TelMTProto",
     "https://t.me/s/Myporoxy",
-    "https://t.me/s/ProxyMTProto_tel",
-    "https://t.me/s/proxy_mci",
-    "https://t.me/s/mtproto_proxy_iran",
     "https://t.me/s/PewezaVPN",
-    "https://t.me/s/asrnovin_ir",
     "https://t.me/s/ProxyHagh",
     "https://t.me/s/iMTProto",
     "https://t.me/s/Proxy_Qavi",
     "https://t.me/s/NoteProxy",
     "https://t.me/s/proxymtprotoj",
-    "https://t.me/s/Pen_Musix",
-    "https://t.me/s/ShadowProxy66",
     "https://t.me/s/TelMTProto",
     "https://t.me/s/iRoProxy",
 
@@ -38,109 +29,77 @@ SOURCES = [
     # "YOUR_CHANNEL_LINK_OR_RAW_URL",
 ]
 
-# ==========================================
-# 🛡️ تنظیمات امنیتی و هوشمند
-# ==========================================
-TIMEOUT = 3.0           # تایم‌اوت منطقی
-CONCURRENT_LIMIT = 20   # همزمانی کم (برای جلوگیری از بن شدن)
-LATEST_LIMIT = 30       # از هر منبع، فقط 30 تای آخر (جدیدترین‌ها) رو بردار
-
-# لیست مرورگرهای واقعی برای گول زدن سرورها
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1"
-]
+# ⚙️ Settings
+TIMEOUT = 5.0        # 5 seconds timeout (To catch slower proxies)
+MAX_THREADS = 50     # Fast scanning
 
 # ==========================================
-# 🛠 توابع
+# 🛠 Functions
 # ==========================================
 
-async def fetch_source(session, url):
-    """دانلود سورس با هدرهای رندوم (مثل انسان)"""
-    try:
-        headers = {'User-Agent': random.choice(USER_AGENTS)}
-        async with session.get(url, headers=headers, timeout=10) as response:
-            text = await response.text()
-            
-            # استخراج لینک‌ها
-            regex = r'(tg://proxy\?server=[^&]+&port=\d+&secret=[^"\s&\n]+|https://t\.me/proxy\?server=[^&]+&port=\d+&secret=[^"\s&\n]+)'
-            found = re.findall(regex, text)
-            
-            # 🔥 نکته کلیدی: برداشتن فقط آخری‌ها (جدیدترین‌ها)
-            if len(found) > LATEST_LIMIT:
-                # برش لیست و برداشتن LATEST_LIMIT عدد آخر
-                return found[-LATEST_LIMIT:] 
-            return found
-    except:
-        return []
+def fetch_proxies():
+    print("🔍 Scanning all sources (Full History)...")
+    all_proxies = set()
+    
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
-async def check_proxy(proxy, semaphore):
-    """تست اتصال با رعایت صف"""
-    async with semaphore: 
+    for url in SOURCES:
         try:
-            # تمیزکاری لینک
-            proxy = proxy.replace("https://t.me/proxy", "tg://proxy")
+            print(f"   Downloading: {url}...")
+            resp = requests.get(url, headers=headers, timeout=15)
+            text = resp.text
             
-            # استخراج آدرس و پورت
-            server = re.search(r'server=([^&]+)', proxy).group(1)
-            port = int(re.search(r'port=(\d+)', proxy).group(1))
+            # Find ALL links (No limit)
+            # Regex for tg:// and https://t.me/proxy
+            matches = re.findall(r'(?:tg://|https://t\.me/)proxy\?server=([^&]+)&port=(\d+)&secret=([a-zA-Z0-9]+)', text)
             
-            start = time.time()
-            # تست اتصال TCP
-            future = asyncio.open_connection(server, port)
-            reader, writer = await asyncio.wait_for(future, timeout=TIMEOUT)
+            for server, port, secret in matches:
+                all_proxies.add((server, int(port), secret))
+                
+        except Exception as e:
+            print(f"   Error grabbing {url}: {e}")
             
-            # محاسبه پینگ
-            ping = int((time.time() - start) * 1000)
-            
-            writer.close()
-            await writer.wait_closed()
-            
-            return {'link': proxy, 'ping': ping}
-        except:
-            return None
+    print(f"📦 Total Candidates Found: {len(all_proxies)}")
+    return list(all_proxies)
 
-async def main():
-    print("🕵️‍♂️ شروع عملیات مخفی (Fresh & Safe Mode)...")
+def check_proxy(proxy_data):
+    server, port, secret = proxy_data
+    try:
+        start_time = time.time()
+        # TCP Connect Test
+        sock = socket.create_connection((server, port), timeout=TIMEOUT)
+        sock.close()
+        ping = int((time.time() - start_time) * 1000)
+        return f"tg://proxy?server={server}&port={port}&secret={secret}", ping
+    except:
+        return None, None
+
+def main():
+    raw_proxies = fetch_proxies()
+    working_proxies = []
     
-    all_candidates = []
+    print(f"⚡️ Starting Connectivity Test (Threads: {MAX_THREADS})...")
     
-    # 1. جمع‌آوری هوشمند
-    async with aiohttp.ClientSession() as session:
-        tasks = [fetch_source(session, url) for url in SOURCES]
-        results = await asyncio.gather(*tasks)
+    with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+        results = executor.map(check_proxy, raw_proxies)
         
-        # ترکیب نتایج
-        for res in results:
-            all_candidates.extend(res)
+        for link, ping in results:
+            if link:
+                working_proxies.append({'link': link, 'ping': ping})
 
-    # حذف تکراری‌ها
-    unique_candidates = list(set(all_candidates))
-    print(f"📦 کاندیداهای بررسی (جدیدترین‌ها): {len(unique_candidates)} مورد")
-    
-    # 2. تست با سرعت کنترل شده
-    print(f"⚡️ شروع تست (با سرعت {CONCURRENT_LIMIT} ترد)...")
-    semaphore = asyncio.Semaphore(CONCURRENT_LIMIT)
-    tasks = [check_proxy(p, semaphore) for p in unique_candidates]
-    
-    check_results = await asyncio.gather(*tasks)
-    
-    # 3. فیلتر و ذخیره
-    working_proxies = [r for r in check_results if r is not None]
-    
-    # مرتب‌سازی بر اساس پینگ
+    # Sort by speed
     working_proxies.sort(key=lambda x: x['ping'])
     
+    # Extract links
     final_links = [x['link'] for x in working_proxies]
     
+    # Save to file
     if final_links:
         with open("mtproto.txt", "w", encoding="utf-8") as f:
             f.write("\n".join(final_links))
-        print(f"💎 پایان کار! {len(final_links)} پروکسی تازه و سالم ذخیره شد.")
+        print(f"\n💎 SUCCESS! Found {len(final_links)} working proxies.")
     else:
-        print("❌ هیچ پروکسی سالمی پیدا نشد.")
+        print("\n❌ Failed. No working proxies found.")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
