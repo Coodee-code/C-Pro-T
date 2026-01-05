@@ -1,8 +1,8 @@
-name: Proxy Collector
+name: Fast Collector
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # اجرا هر 6 ساعت
+    - cron: '0 */2 * * *' # اجرا هر 2 ساعت
   workflow_dispatch:
 
 permissions:
@@ -21,7 +21,6 @@ jobs:
       with:
         python-version: '3.9'
 
-    # نصب کتابخانه ریکوئست (حیاتی)
     - name: Install dependencies
       run: pip install requests
 
@@ -33,5 +32,5 @@ jobs:
         git config --global user.name "ProxyBot"
         git config --global user.email "bot@github.com"
         git add mtproto.txt
-        git commit -m "Updated Proxies" || echo "No changes"
+        git commit -m "Auto Update" || echo "No changes"
         git push
